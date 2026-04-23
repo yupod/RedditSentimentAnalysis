@@ -1,0 +1,32 @@
+projects:
+  - name: "NJ Cannabis - New Product Highlights"
+    reddit:
+      access_mode: json
+      subreddits:
+        - name: "NewJerseyMarijuana"
+          topics:
+            - "just picked up"
+            - "new drop"
+            - "recommendation"
+            - "review"
+            - "favorite"
+        - name: "NewJerseyDispoReviews"
+          topics:
+            - "just picked up"
+            - "new drop"
+            - "recommendation"
+            - "review"
+            - "favorite"
+      date_range:
+        type: relative
+        value: past_month
+      max_posts_per_topic: 20
+    llm:
+      provider: anthropic
+      model: claude-sonnet-4-6
+    delivery:
+      - type: document
+        path: ./reports/
+      - type: email
+        to: raisayumanj@gmail.com
+        subject: "NJ Cannabis - Top New Products This Month"

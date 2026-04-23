@@ -1,0 +1,7 @@
+.env
+credentials.json
+token.json
+reports/
+__pycache__/
+*.pyc
+.python-version
