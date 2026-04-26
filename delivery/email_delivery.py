@@ -3,6 +3,7 @@
 import base64
 import os
 import sys
+from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from pathlib import Path
 
@@ -54,14 +55,31 @@ class EmailDelivery(BaseDelivery):
         service = _get_gmail_service()
         subject = self.config.subject or f"Research Report: {report.project_name}"
 
-        msg = MIMEText(report.to_markdown(), "plain")
-        msg["to"] = self.config.to
-        msg["from"] = self.sender
-        msg["subject"] = subject
-        raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
+        if report.match_table_html:
+            msg = self._build_html_email(report, subject)
+        else:
+            msg = MIMEText(report.to_markdown(), "plain")
+            msg["to"] = self.config.to
+            msg["from"] = self.sender
+            msg["subject"] = subject
 
+        raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
         try:
             result = service.users().messages().send(userId="me", body={"raw": raw}).execute()
             print(f"Report emailed to {self.config.to}. Message ID: {result['id']}")
         except HttpError as e:
             print(f"ERROR sending email: {e}")
+
+    def _build_html_email(self, report: ResearchReport, subject: str) -> MIMEMultipart:
+        msg = MIMEMultipart("alternative")
+        msg["to"] = self.config.to
+        msg["from"] = self.sender
+        msg["subject"] = subject
+
+        # Plain-text fallback
+        msg.attach(MIMEText(report.to_markdown(), "plain", "utf-8"))
+
+        # HTML body — the match table is already a complete, styled page
+        msg.attach(MIMEText(report.match_table_html, "html", "utf-8"))
+
+        return msg

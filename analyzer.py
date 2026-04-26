@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import json
+import re
+from dataclasses import dataclass, field
+from datetime import datetime
 from itertools import groupby
 from typing import List
 
@@ -8,6 +11,20 @@ import anthropic
 
 from config import LLMConfig, ProjectConfig
 from reddit_client import RedditPost
+
+_JSON_BLOCK_RE = re.compile(
+    r"PRODUCTS_JSON:\s*(\[.*?\])\s*(?=SUMMARY:)", re.DOTALL
+)
+
+
+@dataclass
+class ProductMention:
+    name: str
+    brand: str
+    kind: str        # flower, pre-roll, concentrate, edible, vape, tincture, topical, other
+    note: str        # why people like it
+    source_url: str  # Reddit thread URL
+    source_date: datetime
 
 
 @dataclass
@@ -17,6 +34,7 @@ class TopicSummary:
     summary: str
     post_count: int
     sentiment: str  # positive | negative | neutral | mixed
+    product_mentions: List[ProductMention] = field(default_factory=list)
 
 
 @dataclass
@@ -24,12 +42,17 @@ class ResearchReport:
     project_name: str
     date_range: str
     summaries: List[TopicSummary]
+    match_table_html: str = ""   # populated by runner after dispensary matching
+
+    @property
+    def all_mentions(self) -> List[ProductMention]:
+        return [m for s in self.summaries for m in s.product_mentions]
 
     def to_markdown(self) -> str:
         lines = [
             f"# Research Report: {self.project_name}",
             f"**Date Range:** {self.date_range}",
-            f"**Generated:** {__import__('datetime').datetime.now().strftime('%Y-%m-%d %H:%M')}",
+            f"**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M')}",
             "",
         ]
         for s in self.summaries:
@@ -52,9 +75,8 @@ class Analyzer:
             raise ValueError(f"Unsupported LLM provider: {llm_config.provider}")
 
     def analyze(self, project: ProjectConfig, posts: List[RedditPost]) -> ResearchReport:
-        # Deduplicate posts across topics before summarizing per subreddit
-        seen = set()
-        unique = []
+        seen: set = set()
+        unique: List[RedditPost] = []
         for p in posts:
             if p.url not in seen:
                 seen.add(p.url)
@@ -74,52 +96,136 @@ class Analyzer:
 
     def _summarize_group(self, subreddit: str, posts: List[RedditPost]) -> TopicSummary:
         if not posts:
-            return TopicSummary(subreddit=subreddit, topic="products", summary="No posts found.", post_count=0, sentiment="neutral")
+            return TopicSummary(
+                subreddit=subreddit, topic="products",
+                summary="No posts found.", post_count=0, sentiment="neutral",
+            )
 
         posts_text = ""
         for i, p in enumerate(posts, 1):
-            posts_text += f"\n---\nPost {i}: {p.title}\nScore: {p.score} | Comments: {p.num_comments}\n"
+            posts_text += (
+                f"\n---\n[Post {i}] {p.created_utc.strftime('%Y-%m-%d')} | "
+                f"r/{subreddit}\n"
+                f"Title: {p.title}\n"
+                f"Score: {p.score} | Comments: {p.num_comments}\n"
+            )
             if p.body:
                 posts_text += f"Body: {p.body[:300]}\n"
             if p.top_comments:
-                posts_text += "Top comments:\n" + "\n".join(f"  - {c[:200]}" for c in p.top_comments[:3]) + "\n"
+                posts_text += "Top comments:\n"
+                posts_text += "\n".join(f"  - {c[:200]}" for c in p.top_comments[:3])
+                posts_text += "\n"
 
         prompt = (
-            f"You are analyzing Reddit posts from r/{subreddit} to find new cannabis products people are excited about.\n\n"
-            f"Posts (past month):\n{posts_text}\n\n"
-            "Extract the highlights. Respond in this exact format:\n\n"
-            "PRODUCTS:\n"
-            "- <Product Name> by <Brand/Cultivator>: <why people like it, 1-2 sentences>\n"
-            "(list up to 10 products, only include ones with positive mentions)\n\n"
-            "SUMMARY: <2-3 sentence overall summary of what's trending and what people are loving>\n"
+            f"You are analyzing Reddit posts from r/{subreddit} to identify "
+            "cannabis products that people are enthusiastically recommending or praising.\n\n"
+            f"Posts (each labeled [Post N] with date):\n{posts_text}\n\n"
+            "Respond in this EXACT format (no extra text before PRODUCTS_JSON):\n\n"
+            "PRODUCTS_JSON:\n"
+            "[\n"
+            '  {"name": "Product Name", "brand": "Brand Name", '
+            '"type": "flower|pre-roll|concentrate|vaporizers|edible|tincture|topical|other", '
+            '"note": "why people like it (1 sentence)", "post_num": 1},\n'
+            "  ...\n"
+            "]\n\n"
+            "STRICT RULES for PRODUCTS_JSON:\n"
+            "- ONLY include products that receive clearly positive reactions "
+            "(praised, recommended, hyped, or highly rated by commenters).\n"
+            "- EXCLUDE any product that is complained about, criticised, called overpriced, "
+            "disappointing, or mentioned neutrally without enthusiasm.\n"
+            "- EXCLUDE products where the author is merely asking for a recommendation "
+            "without anyone praising a specific product.\n"
+            "- List up to 15 products. post_num references the [Post N] label above.\n\n"
+            "SUMMARY: <2-3 sentence overall summary of what people are loving and why>\n"
             "SENTIMENT: <positive|negative|neutral|mixed>"
         )
 
         message = self.client.messages.create(
             model=self.config.model,
-            max_tokens=1024,
+            max_tokens=1500,
             system=[{
                 "type": "text",
-                "text": "You are a cannabis product research analyst. Extract specific product names, brands, and what people like about them from Reddit posts. Be specific and concise.",
+                "text": (
+                    "You are a cannabis product research analyst. "
+                    "Extract specific product names, brands, types, and what people like "
+                    "about them from Reddit posts. Return valid JSON. Be specific and concise."
+                ),
                 "cache_control": {"type": "ephemeral"},
             }],
             messages=[{"role": "user", "content": prompt}],
         )
 
         response = message.content[0].text
-        summary_line = next((l for l in response.splitlines() if l.startswith("SUMMARY:")), "SUMMARY: No summary available.")
-        sentiment_line = next((l for l in response.splitlines() if l.startswith("SENTIMENT:")), "SENTIMENT: neutral")
+        product_mentions, products_text = self._parse_products(response, posts)
 
-        summary = summary_line.replace("SUMMARY:", "").strip()
+        summary_line = next(
+            (l for l in response.splitlines() if l.startswith("SUMMARY:")),
+            "SUMMARY: No summary available.",
+        )
+        sentiment_line = next(
+            (l for l in response.splitlines() if l.startswith("SENTIMENT:")),
+            "SENTIMENT: neutral",
+        )
+        summary_text = summary_line.replace("SUMMARY:", "").strip()
         sentiment = sentiment_line.replace("SENTIMENT:", "").strip().lower()
         if sentiment not in ("positive", "negative", "neutral", "mixed"):
             sentiment = "neutral"
 
-        # Include full product highlights in summary
-        products_start = response.find("PRODUCTS:")
-        summary_start = response.find("SUMMARY:")
-        if products_start != -1 and summary_start != -1:
-            products_section = response[products_start:summary_start].strip()
-            summary = f"{products_section}\n\n{summary}"
+        combined_summary = f"{products_text}\n\n{summary_text}"
 
-        return TopicSummary(subreddit=subreddit, topic="new products", summary=summary, post_count=len(posts), sentiment=sentiment)
+        return TopicSummary(
+            subreddit=subreddit,
+            topic="new products",
+            summary=combined_summary,
+            post_count=len(posts),
+            sentiment=sentiment,
+            product_mentions=product_mentions,
+        )
+
+    def _parse_products(
+        self, response: str, posts: List[RedditPost]
+    ) -> tuple[List[ProductMention], str]:
+        """Parse PRODUCTS_JSON block; returns (mentions, markdown_text)."""
+        mentions: List[ProductMention] = []
+        text_lines = ["PRODUCTS:"]
+
+        match = _JSON_BLOCK_RE.search(response)
+        if not match:
+            return mentions, "\n".join(text_lines)
+
+        try:
+            items = json.loads(match.group(1))
+        except (json.JSONDecodeError, ValueError) as e:
+            print(f"  WARNING: Could not parse PRODUCTS_JSON: {e}")
+            return mentions, "\n".join(text_lines)
+
+        for item in items[:15]:
+            name = str(item.get("name", "")).strip()
+            brand = str(item.get("brand", "")).strip()
+            kind = str(item.get("type", "")).strip()
+            note = str(item.get("note", "")).strip()
+            post_num = item.get("post_num", 1)
+
+            if not name:
+                continue
+
+            idx = max(0, min(int(post_num) - 1, len(posts) - 1))
+            src = posts[idx]
+
+            mentions.append(ProductMention(
+                name=name,
+                brand=brand,
+                kind=kind,
+                note=note,
+                source_url=src.url,
+                source_date=src.created_utc,
+            ))
+
+            line = f"- **{name}** by {brand}"
+            if kind:
+                line += f" ({kind})"
+            if note:
+                line += f": {note}"
+            text_lines.append(line)
+
+        return mentions, "\n".join(text_lines)

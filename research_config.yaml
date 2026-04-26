@@ -10,6 +10,12 @@ projects:
             - "recommendation"
             - "review"
             - "favorite"
+            - "best brand"
+            - "new product"
+            - "amazing"
+            - "wow"
+            - "impressed"
+            - "love"
         - name: "NewJerseyDispoReviews"
           topics:
             - "just picked up"
@@ -17,6 +23,12 @@ projects:
             - "recommendation"
             - "review"
             - "favorite"
+            - "best brand"
+            - "new product"
+            - "amazing"
+            - "wow"
+            - "impressed"
+            - "love"
       date_range:
         type: relative
         value: past_month
