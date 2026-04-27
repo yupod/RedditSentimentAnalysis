@@ -12,7 +12,8 @@ load_dotenv()
 
 class SubredditConfig(BaseModel):
     name: str
-    topics: List[str]
+    topics: List[str] = Field(default_factory=list)  # empty = no keyword filter
+    pinned_post_ids: List[str] = Field(default_factory=list)  # always-fetch post IDs or full URLs
 
 
 class RelativeDateRange(BaseModel):
@@ -42,6 +43,16 @@ class RelativeDateRange(BaseModel):
             return "month"
         if "week" in v:
             return "week"
+        if v.startswith("past_") and v.endswith("_days"):
+            try:
+                n = int(v.split("_")[1])
+                if n > 30:
+                    return "year"   # wide net so top feed covers the full window
+                if n > 7:
+                    return "month"
+                return "day"
+            except (ValueError, IndexError):
+                pass
         if "day" in v:
             return "day"
         return "month"

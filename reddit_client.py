@@ -10,6 +10,8 @@ import requests
 
 from config import RedditConfig
 
+_MAX_PER_FEED = 100  # Reddit API hard limit per request
+
 
 @dataclass
 class RedditPost:
@@ -51,24 +53,37 @@ class JsonRedditClient(BaseRedditClient):
         posts = []
 
         for subreddit_cfg in config.subreddits:
+            limit = config.max_posts_per_topic
             print(f"  Browsing r/{subreddit_cfg.name} (JSON)...")
-            raw = self._browse(subreddit_cfg.name, time_filter, config.max_posts_per_topic * 3, cutoff)
-            for topic in subreddit_cfg.topics:
-                matched = self._filter_by_topic(raw, topic, subreddit_cfg.name, config.max_posts_per_topic)
-                print(f"    '{topic}': {len(matched)} posts matched")
-                posts.extend(matched)
+            raw = self._browse(subreddit_cfg.name, time_filter, limit, cutoff)
+            all_posts = self._to_posts(raw, subreddit_cfg.name, limit)
+            print(f"    {len(all_posts)} posts fetched (sentiment filtering via Claude)")
+
+            if subreddit_cfg.pinned_post_ids:
+                existing_urls = {p.url for p in all_posts}
+                pinned = self._fetch_pinned_posts(subreddit_cfg.name, subreddit_cfg.pinned_post_ids)
+                added = 0
+                for p in pinned:
+                    if p.url not in existing_urls:
+                        all_posts.append(p)
+                        existing_urls.add(p.url)
+                        added += 1
+                print(f"    {added} pinned post(s) added")
+
+            posts.extend(all_posts)
             time.sleep(1)
 
         return posts
 
     def _browse(self, subreddit: str, time_filter: str, limit: int, cutoff: datetime) -> list:
-        """Fetch recent posts from hot + top feeds, deduplicated."""
-        seen = set()
-        all_posts = []
+        """Fetch posts from hot + top + new feeds, deduplicated and date-filtered."""
+        per_req = min(limit, _MAX_PER_FEED)
+        seen: set = set()
+        all_posts: list = []
         feeds = [
-            (f"{self.BASE_URL}/r/{subreddit}/hot.json", {"limit": 50}),
-            (f"{self.BASE_URL}/r/{subreddit}/top.json", {"limit": 50, "t": time_filter}),
-            (f"{self.BASE_URL}/r/{subreddit}/new.json", {"limit": 50}),
+            (f"{self.BASE_URL}/r/{subreddit}/hot.json",  {"limit": per_req}),
+            (f"{self.BASE_URL}/r/{subreddit}/top.json",  {"limit": per_req, "t": time_filter}),
+            (f"{self.BASE_URL}/r/{subreddit}/new.json",  {"limit": per_req}),
         ]
         for url, params in feeds:
             try:
@@ -88,40 +103,97 @@ class JsonRedditClient(BaseRedditClient):
                 print(f"  WARNING: {url} failed: {e}")
         return all_posts
 
+    def _to_posts(self, raw_posts: list, subreddit: str, limit: int) -> List[RedditPost]:
+        """Convert raw API dicts to RedditPost objects with no keyword filtering."""
+        results = []
+        for d in raw_posts:
+            results.append(self._make_post(d, subreddit, topic="general"))
+            if len(results) >= limit:
+                break
+        return results
+
     def _filter_by_topic(self, raw_posts: list, topic: str, subreddit: str, limit: int) -> List[RedditPost]:
-        """Filter posts whose title or body contains any topic keyword."""
+        """Filter posts whose title or body contains any keyword from topic."""
         keywords = [kw.lower() for kw in topic.split()]
         matched = []
         for d in raw_posts:
             text = (d.get("title", "") + " " + d.get("selftext", "")).lower()
             if any(kw in text for kw in keywords):
-                matched.append(RedditPost(
-                    subreddit=subreddit,
-                    topic=topic,
-                    title=d.get("title", ""),
-                    body=d.get("selftext", "")[:1000],
-                    score=d.get("score", 0),
-                    url=f"{self.BASE_URL}{d.get('permalink', '')}",
-                    created_utc=datetime.utcfromtimestamp(d["created_utc"]),
-                    num_comments=d.get("num_comments", 0),
-                    top_comments=self._fetch_top_comments(subreddit, d["id"]),
-                ))
+                matched.append(self._make_post(d, subreddit, topic))
                 if len(matched) >= limit:
                     break
         return matched
 
+    def _make_post(self, d: dict, subreddit: str, topic: str) -> RedditPost:
+        return RedditPost(
+            subreddit=subreddit,
+            topic=topic,
+            title=d.get("title", ""),
+            body=d.get("selftext", "")[:2000],
+            score=d.get("score", 0),
+            url=f"{self.BASE_URL}{d.get('permalink', '')}",
+            created_utc=datetime.utcfromtimestamp(d["created_utc"]),
+            num_comments=d.get("num_comments", 0),
+            top_comments=self._fetch_top_comments(subreddit, d["id"]),
+        )
+
+    def _extract_post_id(self, id_or_url: str) -> str:
+        """Accept a post ID or a full Reddit URL and return just the post ID."""
+        if "/" not in id_or_url:
+            return id_or_url
+        parts = [p for p in id_or_url.rstrip("/").split("/") if p]
+        try:
+            return parts[parts.index("comments") + 1]
+        except (ValueError, IndexError):
+            return id_or_url
+
+    def _fetch_pinned_posts(self, subreddit: str, id_or_urls: List[str]) -> List[RedditPost]:
+        """Fetch specific posts by ID or URL, bypassing feed/date filters."""
+        results = []
+        for raw_id in id_or_urls:
+            post_id = self._extract_post_id(raw_id)
+            url = f"{self.BASE_URL}/r/{subreddit}/comments/{post_id}.json"
+            delays = [2, 10, 30]
+            for attempt, delay in enumerate(delays, 1):
+                try:
+                    time.sleep(delay)
+                    resp = requests.get(
+                        url,
+                        params={"limit": 10, "sort": "top", "depth": 1},
+                        headers=self.HEADERS,
+                        timeout=15,
+                    )
+                    if resp.status_code == 429:
+                        if attempt < len(delays):
+                            print(f"  Rate limited on pinned post {post_id}, retrying in {delays[attempt]}s...")
+                            continue
+                        print(f"  WARNING: Rate limited on pinned post {post_id} after {attempt} attempts, skipping.")
+                        break
+                    resp.raise_for_status()
+                    data = resp.json()
+                    d = data[0]["data"]["children"][0]["data"]
+                    results.append(self._make_post(d, subreddit, topic="pinned"))
+                    break
+                except requests.HTTPError:
+                    print(f"  WARNING: Could not fetch pinned post {post_id}: HTTP {resp.status_code}")
+                    break
+                except Exception as e:
+                    print(f"  WARNING: Could not fetch pinned post {post_id}: {e}")
+                    break
+        return results
+
     def _fetch_top_comments(self, subreddit: str, post_id: str) -> List[str]:
         url = f"{self.BASE_URL}/r/{subreddit}/comments/{post_id}.json"
         try:
-            resp = requests.get(url, params={"limit": 5, "sort": "top", "depth": 1}, headers=self.HEADERS, timeout=10)
+            resp = requests.get(url, params={"limit": 10, "sort": "top", "depth": 1}, headers=self.HEADERS, timeout=10)
             resp.raise_for_status()
             data = resp.json()
             if len(data) < 2:
                 return []
             comments = []
-            for child in data[1]["data"]["children"][:5]:
+            for child in data[1]["data"]["children"][:10]:
                 body = child.get("data", {}).get("body", "")
-                if body and body != "[deleted]" and len(body) < 500:
+                if body and body != "[deleted]" and len(body) < 1000:
                     comments.append(body)
             return comments
         except Exception:
@@ -148,7 +220,8 @@ class PrawRedditClient(BaseRedditClient):
 
         for subreddit_cfg in config.subreddits:
             sub = self.reddit.subreddit(subreddit_cfg.name)
-            for topic in subreddit_cfg.topics:
+            topics = subreddit_cfg.topics or ["cannabis"]
+            for topic in topics:
                 print(f"  Searching r/{subreddit_cfg.name} for '{topic}' (API)...")
                 results = sub.search(topic, time_filter=time_filter, limit=config.max_posts_per_topic * 2, sort="relevance")
                 count = 0

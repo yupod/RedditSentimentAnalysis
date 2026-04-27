@@ -51,21 +51,23 @@ def _build_meta_html(reddit_config, posts_fetched: int, mentions_found: int) -> 
         date_range_str = "Unknown"
 
     subreddit_items = "".join(
-        f"<li><strong>r/{s.name}</strong> &mdash; "
-        f"keywords: {', '.join(f'&ldquo;{t}&rdquo;' for t in s.topics)}</li>"
+        f"<li><strong>r/{s.name}</strong></li>"
         for s in reddit_config.subreddits
     )
-    matched = sum(1 for m in [])  # placeholder; actual count appended by caller
 
     return f"""<div class="meta">
+  <div class="meta-timeframe">
+    <span class="meta-label">Time frame</span>
+    <span class="meta-value meta-timeframe-value">{date_range_str}</span>
+  </div>
+  <hr class="meta-divider">
   <div class="meta-grid">
-    <div class="meta-item"><span class="meta-label">Time frame</span><span class="meta-value">{date_range_str}</span></div>
     <div class="meta-item"><span class="meta-label">Posts analysed</span><span class="meta-value">{posts_fetched}</span></div>
     <div class="meta-item"><span class="meta-label">Positive mentions found</span><span class="meta-value">{mentions_found}</span></div>
-    <div class="meta-item"><span class="meta-label">Max posts / keyword</span><span class="meta-value">{reddit_config.max_posts_per_topic}</span></div>
+    <div class="meta-item"><span class="meta-label">Max posts fetched</span><span class="meta-value">{reddit_config.max_posts_per_topic}</span></div>
   </div>
   <div class="meta-subs">
-    <span class="meta-label">Subreddits &amp; keywords</span>
+    <span class="meta-label">Subreddits</span>
     <ul>{subreddit_items}</ul>
   </div>
 </div>"""
@@ -105,8 +107,11 @@ def generate_match_table_html(
     background: #fff; border: 1px solid #d4e6d4; border-radius: 8px;
     padding: 1rem 1.2rem; margin-bottom: 1.5rem; font-size: 0.85rem;
   }}
+  .meta-timeframe {{ margin-bottom: 0.6rem; }}
+  .meta-timeframe-value {{ font-size: 1rem; font-weight: 600; color: #1a3d1a; margin-top: 3px; display: block; }}
+  .meta-divider {{ border: none; border-top: 1px solid #d4e6d4; margin: 0.6rem 0; }}
   .meta-grid {{
-    display: flex; flex-wrap: wrap; gap: 1rem 2rem; margin-bottom: 0.75rem;
+    display: flex; flex-wrap: wrap; gap: 1rem 2.5rem; margin-bottom: 0.75rem;
   }}
   .meta-item {{ display: flex; flex-direction: column; }}
   .meta-label {{ font-weight: 600; color: #2d6a2d; font-size: 0.75rem;

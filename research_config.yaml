@@ -4,35 +4,13 @@ projects:
       access_mode: json
       subreddits:
         - name: "NewJerseyMarijuana"
-          topics:
-            - "just picked up"
-            - "new drop"
-            - "recommendation"
-            - "review"
-            - "favorite"
-            - "best brand"
-            - "new product"
-            - "amazing"
-            - "wow"
-            - "impressed"
-            - "love"
         - name: "NewJerseyDispoReviews"
-          topics:
-            - "just picked up"
-            - "new drop"
-            - "recommendation"
-            - "review"
-            - "favorite"
-            - "best brand"
-            - "new product"
-            - "amazing"
-            - "wow"
-            - "impressed"
-            - "love"
+          pinned_post_ids:
+            - "https://www.reddit.com/r/NewJerseyDispoReviews/comments/1swbkm5/new_dispo/"
       date_range:
         type: relative
-        value: past_month
-      max_posts_per_topic: 20
+        value: past_60_days
+      max_posts_per_topic: 75
     llm:
       provider: anthropic
       model: claude-sonnet-4-6

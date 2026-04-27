@@ -110,10 +110,10 @@ class Analyzer:
                 f"Score: {p.score} | Comments: {p.num_comments}\n"
             )
             if p.body:
-                posts_text += f"Body: {p.body[:300]}\n"
+                posts_text += f"Body: {p.body[:800]}\n"
             if p.top_comments:
                 posts_text += "Top comments:\n"
-                posts_text += "\n".join(f"  - {c[:200]}" for c in p.top_comments[:3])
+                posts_text += "\n".join(f"  - {c[:500]}" for c in p.top_comments[:7])
                 posts_text += "\n"
 
         prompt = (
@@ -125,7 +125,14 @@ class Analyzer:
             "[\n"
             '  {"name": "Product Name", "brand": "Brand Name", '
             '"type": "flower|pre-roll|concentrate|vaporizers|edible|tincture|topical|other", '
-            '"note": "why people like it (1 sentence)", "post_num": 1},\n'
+            '"note": "4-6 sentences with rich detail on WHY people love this product: '
+            "(1) specific effects users describe using their exact words — e.g. 'euphoric', 'heavy body buzz', 'clear-headed and functional'; "
+            "(2) flavor and aroma profile with specific descriptors; "
+            "(3) potency, quality, and consistency feedback; "
+            "(4) value for money or price-to-quality ratio if mentioned; "
+            "(5) how it compares to other products if users make comparisons; "
+            'include at least one direct user quote in quotes if available", '
+            '"post_num": 1},\n'
             "  ...\n"
             "]\n\n"
             "STRICT RULES for PRODUCTS_JSON:\n"
@@ -133,16 +140,18 @@ class Analyzer:
             "(praised, recommended, hyped, or highly rated by commenters).\n"
             "- EXCLUDE any product that is complained about, criticised, called overpriced, "
             "disappointing, or mentioned neutrally without enthusiasm.\n"
-            "- EXCLUDE products where the author is merely asking for a recommendation "
-            "without anyone praising a specific product.\n"
+            "- If the OP is asking a question (e.g. 'what brands do you like?'), "
+            "DO NOT exclude the post — instead extract products from the COMMENTS where people respond with enthusiastic recommendations. "
+            "Only skip a post entirely if neither the body nor any comment contains an enthusiastic product recommendation.\n"
+            "- Draw details from both the post body AND the comments — comments are often the richest source of praise.\n"
             "- List up to 15 products. post_num references the [Post N] label above.\n\n"
-            "SUMMARY: <2-3 sentence overall summary of what people are loving and why>\n"
+            "SUMMARY: <2-3 sentence overall summary of what people are loving and why — mention specific themes like effects, flavors, or value that keep coming up>\n"
             "SENTIMENT: <positive|negative|neutral|mixed>"
         )
 
         message = self.client.messages.create(
             model=self.config.model,
-            max_tokens=1500,
+            max_tokens=5000,
             system=[{
                 "type": "text",
                 "text": (
